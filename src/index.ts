@@ -1,28 +1,23 @@
 /**
- * Notion MCP Server for Cloudflare Workers (free-tier friendly)
+ * Notion MCP Server (Netlify Functions)
  *
  * Transport : MCP Streamable HTTP (stateless, single JSON response per POST)
  * Endpoint  : POST /mcp
  * Auth      : Authorization: Bearer <MCP_AUTH_TOKEN>
- * No SDK dependency -> tiny bundle, tiny CPU time.
+ * No SDK dependency -> tiny bundle.
  */
 
 export interface Env {
-  NOTION_TOKEN: string; // Notion internal integration secret
-  MCP_AUTH_TOKEN: string; // token clients must present to this server
-  NOTION_VERSION?: string; // default 2022-06-28
-  ALLOWED_ORIGINS?: string; // comma-separated, optional (browser clients)
-  ALLOW_QUERY_TOKEN?: string; // "true" => also accept ?key=<token> (less secure)
+  NOTION_TOKEN: string;
+  MCP_AUTH_TOKEN: string;
+  NOTION_VERSION?: string;
+  ALLOWED_ORIGINS?: string;
+  ALLOW_QUERY_TOKEN?: string;
 }
 
 const SERVER_INFO = { name: "notion-mcp", version: "1.0.0" };
 const SUPPORTED_VERSIONS = ["2025-06-18", "2025-03-26", "2024-11-05"];
-// Free plan: max 50 subrequests per invocation. Keep headroom.
 const MAX_SUBREQUESTS = 40;
-
-/* ------------------------------------------------------------------ */
-/* Notion client                                                       */
-/* ------------------------------------------------------------------ */
 
 class Notion {
   used = 0;
@@ -54,10 +49,6 @@ class Notion {
     return data;
   }
 }
-
-/* ------------------------------------------------------------------ */
-/* Helpers: Notion objects -> compact JSON / markdown                  */
-/* ------------------------------------------------------------------ */
 
 const plain = (rt: any[] | undefined): string => (rt ?? []).map((t) => t.plain_text ?? "").join("");
 
@@ -124,11 +115,8 @@ function simplifyPage(page: any) {
 function simplifyDatabase(db: any) {
   const schema: Record<string, unknown> = {};
   for (const [name, p] of Object.entries<any>(db.properties ?? {})) {
-    const extra =
-      p.select?.options ?? p.multi_select?.options ?? p.status?.options;
-    schema[name] = extra
-      ? { type: p.type, options: extra.map((o: any) => o.name) }
-      : { type: p.type };
+    const extra = p.select?.options ?? p.multi_select?.options ?? p.status?.options;
+    schema[name] = extra ? { type: p.type, options: extra.map((o: any) => o.name) } : { type: p.type };
   }
   return {
     object: "database",
@@ -161,11 +149,11 @@ function blockToLine(b: any): string {
     case "to_do":
       return `- [${d.checked ? "x" : " "}] ${text}`;
     case "toggle":
-      return `- ▸ ${text}`;
+      return `- \u25B8 ${text}`;
     case "quote":
       return `> ${text}`;
     case "callout":
-      return `> ${d.icon?.emoji ?? "💡"} ${text}`;
+      return `> ${d.icon?.emoji ?? "\uD83D\uDCA1"} ${text}`;
     case "code":
       return "```" + (d.language ?? "") + "\n" + text + "\n```";
     case "divider":
@@ -209,8 +197,6 @@ async function readBlocks(n: Notion, id: string, depth: number, indent: number, 
   } while (cursor);
 }
 
-/* Markdown -> Notion blocks (small subset) */
-
 const rt = (text: string) => {
   const out: any[] = [];
   for (let i = 0; i < text.length; i += 2000) {
@@ -220,7 +206,13 @@ const rt = (text: string) => {
 };
 const blk = (type: string, text: string) => ({ object: "block", type, [type]: { rich_text: rt(text) } });
 const LANG: Record<string, string> = {
-  js: "javascript", ts: "typescript", py: "python", sh: "shell", bash: "shell", yml: "yaml", md: "markdown",
+  js: "javascript",
+  ts: "typescript",
+  py: "python",
+  sh: "shell",
+  bash: "shell",
+  yml: "yaml",
+  md: "markdown",
 };
 
 function markdownToBlocks(md: string): any[] {
@@ -260,10 +252,6 @@ async function appendBlocks(n: Notion, blockId: string, blocks: any[]) {
     await n.call("PATCH", `/blocks/${blockId}/children`, { children: blocks.slice(i, i + 100) });
   }
 }
-
-/* ------------------------------------------------------------------ */
-/* Tools                                                               */
-/* ------------------------------------------------------------------ */
 
 interface Tool {
   name: string;
@@ -437,8 +425,7 @@ const TOOLS: Tool[] = [
   },
   {
     name: "notion_update_page",
-    description:
-      "Update a page's properties (raw Notion properties object), or archive/restore it with `archived`.",
+    description: "Update a page's properties (raw Notion properties object), or archive/restore it with `archived`.",
     inputSchema: {
       type: "object",
       properties: {
@@ -477,10 +464,6 @@ const TOOLS: Tool[] = [
   },
 ];
 
-/* ------------------------------------------------------------------ */
-/* JSON-RPC / MCP                                                      */
-/* ------------------------------------------------------------------ */
-
 type Id = string | number | null;
 const rpcOk = (id: Id, result: unknown) => ({ jsonrpc: "2.0", id, result });
 const rpcErr = (id: Id, code: number, message: string) => ({ jsonrpc: "2.0", id, error: { code, message } });
@@ -489,7 +472,7 @@ async function handleMessage(msg: any, env: Env): Promise<unknown | null> {
   if (!msg || typeof msg !== "object" || msg.jsonrpc !== "2.0") {
     return rpcErr(msg?.id ?? null, -32600, "Invalid Request");
   }
-  if (msg.method === undefined) return null; // a response from client: ignore
+  if (msg.method === undefined) return null;
   const isNotification = msg.id === undefined;
   const id: Id = msg.id ?? null;
 
@@ -532,10 +515,6 @@ async function handleMessage(msg: any, env: Env): Promise<unknown | null> {
   }
 }
 
-/* ------------------------------------------------------------------ */
-/* HTTP layer                                                          */
-/* ------------------------------------------------------------------ */
-
 function safeEqual(a: string, b: string): boolean {
   if (a.length !== b.length) return false;
   let diff = 0;
@@ -544,16 +523,30 @@ function safeEqual(a: string, b: string): boolean {
 }
 
 function allowedOrigins(env: Env): string[] {
-  return (env.ALLOWED_ORIGINS ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+  return (env.ALLOWED_ORIGINS ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+function originAllowed(origin: string, allow: string[]): boolean {
+  if (!allow.length) return true;
+  return allow.some((pattern) => {
+    if (pattern === "*") return true;
+    if (!pattern.includes("*")) return pattern === origin;
+    const escaped = pattern.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*");
+    return new RegExp(`^${escaped}$`).test(origin);
+  });
 }
 
 function corsHeaders(req: Request, env: Env): Record<string, string> {
   const origin = req.headers.get("Origin");
-  if (!origin || !allowedOrigins(env).includes(origin)) return {};
+  if (!origin || !originAllowed(origin, allowedOrigins(env))) return {};
   return {
     "Access-Control-Allow-Origin": origin,
     "Access-Control-Allow-Methods": "POST, OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type, Authorization, Accept, MCP-Protocol-Version, Mcp-Session-Id",
+    "Access-Control-Max-Age": "86400",
     Vary: "Origin",
   };
 }
@@ -564,53 +557,55 @@ const json = (body: unknown, status = 200, extra: Record<string, string> = {}) =
     headers: { "Content-Type": "application/json", ...extra },
   });
 
-export default {
-  async fetch(req: Request, env: Env): Promise<Response> {
-    const url = new URL(req.url);
-    const cors = corsHeaders(req, env);
+function requestPath(url: URL): string {
+  let stripped = url.pathname.replace(/^\/\.netlify\/functions\/[^/]+/, "");
+  if (stripped === "") stripped = "/";
+  if (stripped.length > 1 && stripped.endsWith("/")) stripped = stripped.slice(0, -1);
+  return stripped;
+}
 
-    if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: cors });
-    if (url.pathname === "/" || url.pathname === "/health") {
-      return json({ status: "ok", ...SERVER_INFO, endpoint: "/mcp" }, 200, cors);
-    }
-    if (url.pathname !== "/mcp") return json({ error: "Not found" }, 404, cors);
+export async function handleRequest(req: Request, env: Env): Promise<Response> {
+  const url = new URL(req.url);
+  const pathname = requestPath(url);
+  const cors = corsHeaders(req, env);
 
-    // DNS-rebinding protection for browser callers
-    const origin = req.headers.get("Origin");
-    const allow = allowedOrigins(env);
-    if (origin && allow.length && !allow.includes(origin)) return json({ error: "Origin not allowed" }, 403);
+  if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: cors });
+  if (pathname === "/" || pathname === "/health") {
+    return json({ status: "ok", ...SERVER_INFO, endpoint: "/mcp" }, 200, cors);
+  }
+  if (pathname !== "/mcp") return json({ error: "Not found" }, 404, cors);
 
-    // Fail closed if secrets are missing
-    if (!env.MCP_AUTH_TOKEN || !env.NOTION_TOKEN) {
-      return json({ error: "Server is not configured (missing secrets)" }, 500, cors);
-    }
+  const origin = req.headers.get("Origin");
+  const allow = allowedOrigins(env);
+  if (origin && !originAllowed(origin, allow)) return json({ error: "Origin not allowed" }, 403);
 
-    // Auth
-    const bearer = (req.headers.get("Authorization") ?? "").replace(/^Bearer\s+/i, "");
-    const token = bearer || (env.ALLOW_QUERY_TOKEN === "true" ? url.searchParams.get("key") ?? "" : "");
-    if (!safeEqual(token, env.MCP_AUTH_TOKEN)) {
-      return json({ error: "Unauthorized" }, 401, { ...cors, "WWW-Authenticate": "Bearer" });
-    }
+  if (!env.MCP_AUTH_TOKEN || !env.NOTION_TOKEN) {
+    return json({ error: "Server is not configured (missing secrets)" }, 500, cors);
+  }
 
-    // Stateless server: no standalone SSE stream, no sessions.
-    if (req.method !== "POST") {
-      return new Response("Method Not Allowed", { status: 405, headers: { ...cors, Allow: "POST, OPTIONS" } });
-    }
+  const bearer = (req.headers.get("Authorization") ?? "").replace(/^Bearer\s+/i, "");
+  const token = bearer || (env.ALLOW_QUERY_TOKEN === "true" ? (url.searchParams.get("key") ?? "") : "");
+  if (!safeEqual(token, env.MCP_AUTH_TOKEN)) {
+    return json({ error: "Unauthorized" }, 401, { ...cors, "WWW-Authenticate": "Bearer" });
+  }
 
-    let body: unknown;
-    try {
-      body = await req.json();
-    } catch {
-      return json(rpcErr(null, -32700, "Parse error"), 400, cors);
-    }
+  if (req.method !== "POST") {
+    return new Response("Method Not Allowed", { status: 405, headers: { ...cors, Allow: "POST, OPTIONS" } });
+  }
 
-    if (Array.isArray(body)) {
-      if (!body.length) return json(rpcErr(null, -32600, "Empty batch"), 400, cors);
-      const results = (await Promise.all(body.map((m) => handleMessage(m, env)))).filter((r) => r !== null);
-      return results.length ? json(results, 200, cors) : new Response(null, { status: 202, headers: cors });
-    }
+  let body: unknown;
+  try {
+    body = await req.json();
+  } catch {
+    return json(rpcErr(null, -32700, "Parse error"), 400, cors);
+  }
 
-    const result = await handleMessage(body, env);
-    return result === null ? new Response(null, { status: 202, headers: cors }) : json(result, 200, cors);
-  },
-} satisfies ExportedHandler<Env>;
+  if (Array.isArray(body)) {
+    if (!body.length) return json(rpcErr(null, -32600, "Empty batch"), 400, cors);
+    const results = (await Promise.all(body.map((m) => handleMessage(m, env)))).filter((r) => r !== null);
+    return results.length ? json(results, 200, cors) : new Response(null, { status: 202, headers: cors });
+  }
+
+  const result = await handleMessage(body, env);
+  return result === null ? new Response(null, { status: 202, headers: cors }) : json(result, 200, cors);
+}
